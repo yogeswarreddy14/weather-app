@@ -1,65 +1,61 @@
-from flask import Flask, render_template, request
-import requests
+from flask import Flask, jsonify, request
+from weather_service import WeatherService
+from models import db
+import os
 
 app = Flask(__name__)
 
-API_KEY = "1ef088a9f620c538e8a36b7e18ed0864"
-BASE_URL = "http://api.openweathermap.org/data/2.5/weather"
-GEO_URL = "http://api.openweathermap.org/geo/1.0/direct"
+# Configure database
+app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv('DATABASE_URL', 'sqlite:///weather.db')
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+db.init_app(app)
 
-@app.route('/', methods=['GET', 'POST'])
-def index():
-    weather_data = None
-    error = None
+@app.route('/')
+def home():
+    return jsonify({
+        "message": "Welcome to Weather App API",
+        "endpoints": {
+            "current_weather": "/weather/current?city=<city>&country=<country>",
+            "forecast": "/weather/forecast?city=<city>&country=<country>",
+            "historical": "/weather/historical?city=<city>&country=<country>&days=<days>"
+        }
+    })
 
-    if request.method == 'POST':
-        city = request.form.get('city')
-        if city:
-            geo_params = {
-                'q': city,
-                'limit': 1,
-                'appid': API_KEY
-            }
+@app.route('/weather/current')
+def get_current_weather():
+    city = request.args.get('city', 'London')
+    country = request.args.get('country', 'UK')
+    
+    weather_data = WeatherService.get_current_weather(city, country)
+    if weather_data:
+        return jsonify(WeatherService.parse_weather_data(weather_data))
+    return jsonify({"error": "Could not fetch weather data"}), 500
 
-            try:
-                geo_response = requests.get(GEO_URL, params=geo_params)
-                geo_response.raise_for_status()
-                location = geo_response.json()
+@app.route('/weather/forecast')
+def get_forecast():
+    city = request.args.get('city', 'London')
+    country = request.args.get('country', 'UK')
+    
+    forecast_data = WeatherService.get_weather_forecast(city, country)
+    if forecast_data:
+        return jsonify(forecast_data)
+    return jsonify({"error": "Could not fetch forecast data"}), 500
 
-                if location:
-                    lat, lon = location[0]['lat'], location[0]['lon']
-
-                    weather_params = {
-                        'lat': lat,
-                        'lon': lon,
-                        'appid': API_KEY,
-                        'units': 'metric'
-                    }
-
-                    response = requests.get(BASE_URL, params=weather_params)
-                    response.raise_for_status()
-                    data = response.json()
-
-                    if data.get('cod') == 200:
-                        weather_data = {
-                            'city': data['name'],
-                            'temperature': data['main']['temp'],
-                            'description': data['weather'][0]['description'],
-                            'icon': data['weather'][0]['icon'],
-                            'humidity': data['main']['humidity'],
-                            'wind_speed': data['wind']['speed']
-                        }
-                    else:
-                        error = "Weather data not available."
-
-                else:
-                    error = "City not found. Please enter a valid city name."
-
-            except requests.exceptions.RequestException as e:
-                error = f"Network error: {str(e)}"
-
-    return render_template('index.html', weather_data=weather_data, error=error)
+@app.route('/weather/historical')
+def get_historical():
+    city = request.args.get('city', 'London')
+    country = request.args.get('country', 'UK')
+    days = int(request.args.get('days', 7))
+    
+    historical_data = WeatherService.get_historical_data(city, country, days)
+    if historical_data:
+        return jsonify([{
+            'city': data.city,
+            'country': data.country,
+            'temperature': data.temperature,
+            'timestamp': data.timestamp.isoformat()
+        } for data in historical_data])
+    return jsonify({"error": "Could not fetch historical data"}), 500
 
 if __name__ == '__main__':
-    app.run(host="0.0.0.0", port=8000, debug=True)
-
+    app.run(host='0.0.0.0', port=8000, debug=True)
