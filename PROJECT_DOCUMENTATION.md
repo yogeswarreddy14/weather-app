@@ -359,16 +359,65 @@ pipeline {
 ## Deployment
 
 ### Docker Deployment
-The application is deployed using Docker containers with the following configuration:
+The application is deployed using a multi-stage Docker build with the following configuration:
 
 1. **Dockerfile Configuration**:
    ```dockerfile
-   FROM python:3.9-slim
+   # Build stage
+   FROM python:3.9-slim as builder
+   
    WORKDIR /app
+   
+   # Install build dependencies
+   RUN apt-get update && apt-get install -y --no-install-recommends \
+       build-essential \
+       && rm -rf /var/lib/apt/lists/*
+   
+   # Copy requirements first to leverage Docker cache
    COPY requirements.txt .
-   RUN pip install -r requirements.txt
+   
+   # Install Python dependencies
+   RUN pip wheel --no-cache-dir --no-deps --wheel-dir /app/wheels -r requirements.txt
+   
+   # Final stage
+   FROM python:3.9-slim
+   
+   WORKDIR /app
+   
+   # Install runtime dependencies
+   RUN apt-get update && apt-get install -y --no-install-recommends \
+       && rm -rf /var/lib/apt/lists/*
+   
+   # Copy wheels from builder
+   COPY --from=builder /app/wheels /wheels
+   COPY --from=builder /app/requirements.txt .
+   
+   # Install application dependencies
+   RUN pip install --no-cache /wheels/*
+   
+   # Copy application code
    COPY . .
-   CMD ["python", "app.py"]
+   
+   # Create non-root user
+   RUN useradd -m -u 1000 appuser && \
+       chown -R appuser:appuser /app
+   USER appuser
+   
+   # Set environment variables
+   ENV PYTHONUNBUFFERED=1 \
+       FLASK_APP=app.py \
+       FLASK_ENV=production \
+       PORT=8000
+   
+   # Expose port
+   EXPOSE 8000
+   
+   # Health check
+   HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 \
+       CMD curl -f http://localhost:8000/ || exit 1
+   
+   # Run the application with gunicorn
+   CMD ["gunicorn", "--bind", "0.0.0.0:8000", "--workers", "4", "app:app"]
    ```
 
 2. **Deployment Process**:
@@ -379,7 +428,20 @@ The application is deployed using Docker containers with the following configura
 3. **Environment Configuration**:
    - Port: 8000
    - Host: 0.0.0.0 (accessible from any network interface)
-   - Debug mode: Enabled in development
+   - Production environment
+   - 4 worker processes for better performance
+
+4. **Security Features**:
+   - Non-root user for running the application
+   - Multi-stage build for smaller image size
+   - Health checks for container monitoring
+   - Proper file permissions
+
+5. **Performance Optimizations**:
+   - Leveraging Docker cache for faster builds
+   - Using slim base image
+   - Optimized dependency installation
+   - Multiple worker processes
 
 ### CI/CD Pipeline
 The application uses Jenkins for continuous integration and deployment:
@@ -394,3 +456,53 @@ The application uses Jenkins for continuous integration and deployment:
    - Automatic builds on code changes
    - Container management
    - Error handling and logging 
+
+### Glitch Deployment
+The application can be deployed on Glitch with the following configuration:
+
+1. **glitch.json Configuration**:
+   ```json
+   {
+     "install": "pip install -r requirements.txt",
+     "start": "python app.py",
+     "watch": {
+       "ignore": [
+         "*.pyc",
+         "*.pyo",
+         "*.pyd",
+         ".git",
+         ".env",
+         "node_modules",
+         "__pycache__"
+       ]
+     },
+     "env": {
+       "FLASK_APP": "app.py",
+       "FLASK_ENV": "development",
+       "PORT": "3000",
+       "PYTHONUNBUFFERED": "1"
+     },
+     "scripts": {
+       "test": "python -m pytest tests/",
+       "lint": "flake8 ."
+     }
+   }
+   ```
+
+2. **Deployment Process**:
+   - Import the project to Glitch
+   - Glitch will automatically install dependencies
+   - The application will start on port 3000
+   - Live reload is enabled for development
+
+3. **Environment Configuration**:
+   - Development environment
+   - Port 3000 (Glitch default)
+   - Automatic dependency installation
+   - File watching for changes
+
+4. **Development Features**:
+   - Live reload on code changes
+   - Automatic dependency management
+   - Development server configuration
+   - Test and lint scripts 
